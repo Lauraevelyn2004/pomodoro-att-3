@@ -1,0 +1,407 @@
+package br.edu.ifsuldeminas.mch.pdm.pomodoro;
+
+import android.content.Intent;
+import android.os.Bundle;
+import android.os.CountDownTimer;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.TextView;
+import android.widget.Toast;
+import android.widget.ProgressBar;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
+import androidx.appcompat.widget.Toolbar;
+
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+
+public class MainActivity extends AppCompatActivity {
+
+    private EditText etMateria;
+    private TextView tvTimer;
+    private ProgressBar progressCircular;
+    private Button btnIniciar, btnPausar, btnCancelar, btnFinalizarEstudo;
+
+    private CountDownTimer countDownTimer;
+    private long tempoRestanteEmMillis;
+    private long tempoFocoEmMillis;
+    private long tempoPausaEmMillis;
+
+    private boolean timerRodando = false;
+    private boolean emModoFoco = true;
+
+    private PreferencesHelper preferencesHelper;
+    private SessaoDao sessaoDao;
+
+    private String dataInicioSessao = "";
+    private int totalMinutosFocoConcluidos = 0;
+    private int totalMinutosPausaConcluidos = 0;
+
+    private ActivityResultLauncher<Intent> alarmLauncher;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        // 1. Inicializamos as preferências primeiro
+        preferencesHelper = new PreferencesHelper(this);
+
+        // 2. Aplicamos o tema correto antes de o ecrã ser desenhado
+        if (preferencesHelper.isModoEscuro()) {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
+        } else {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
+        }
+
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        Toolbar toolbar = findViewById(R.id.toolbarMain);
+        setSupportActionBar(toolbar);
+
+        sessaoDao = AppDatabase.getInstance(this).sessaoDao();
+
+        etMateria = findViewById(R.id.etMateria);
+        tvTimer = findViewById(R.id.tvTimer);
+        progressCircular = findViewById(R.id.progressCircular);
+        btnIniciar = findViewById(R.id.btnIniciar);
+        btnPausar = findViewById(R.id.btnPausar);
+        btnCancelar = findViewById(R.id.btnCancelar);
+        btnFinalizarEstudo = findViewById(R.id.btnFinalizarEstudo);
+
+        alarmLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                        String acao = result.getData().getStringExtra("acao");
+
+                        if ("INICIAR_PAUSA".equals(acao)) {
+                            definirModoPausa();
+                            iniciarTimer();
+                        } else if ("INICIAR_FOCO".equals(acao)) {
+                            definirModoFoco();
+                            iniciarTimer();
+                        } else if ("ENCERRAR_SESSAO".equals(acao)) {
+                            finalizarEstudo();
+                        }
+                    }
+                }
+        );
+
+        carregarTemposSalvos();
+        definirModoFoco();
+
+        btnIniciar.setOnClickListener(v -> iniciarTimer());
+        btnPausar.setOnClickListener(v -> pausarTimer());
+        btnCancelar.setOnClickListener(v -> cancelarTimer());
+        btnFinalizarEstudo.setOnClickListener(v -> finalizarEstudo());
+
+        configurarMenuInferior("INICIO");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        if (!timerRodando) {
+            carregarTemposSalvos();
+
+            if (emModoFoco) {
+                definirModoFoco();
+            } else {
+                definirModoPausa();
+            }
+        }
+    }
+
+    private void carregarTemposSalvos() {
+        int focoMinutos = preferencesHelper.getTempoFoco();
+        int pausaMinutos = preferencesHelper.getPausaCurta();
+
+        tempoFocoEmMillis = focoMinutos * 60L * 1000L;
+        tempoPausaEmMillis = pausaMinutos * 60L * 1000L;
+    }
+
+    private void definirModoFoco() {
+        emModoFoco = true;
+        tempoRestanteEmMillis = tempoFocoEmMillis;
+        atualizarTimer();
+        atualizarProgressoCircular();
+        atualizarBotoes();
+    }
+
+    private void definirModoPausa() {
+        emModoFoco = false;
+        tempoRestanteEmMillis = tempoPausaEmMillis;
+        atualizarTimer();
+        atualizarProgressoCircular();
+        atualizarBotoes();
+    }
+
+    private void abrirTelaAlarme(boolean veioDoFoco) {
+        Intent intent = new Intent(this, AlarmActivity.class);
+        intent.putExtra("veioDoFoco", veioDoFoco);
+        alarmLauncher.launch(intent);
+    }
+
+    private void iniciarTimer() {
+        String materia = etMateria.getText().toString().trim();
+
+        if (materia.isEmpty()) {
+            Toast.makeText(this, "Digite a matéria antes de iniciar.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (timerRodando) return;
+
+        if (dataInicioSessao.isEmpty()) {
+            dataInicioSessao = getDataHoraAtual();
+        }
+
+        countDownTimer = new CountDownTimer(tempoRestanteEmMillis, 50) {
+            @Override
+            public void onTick(long millisUntilFinished) {
+                tempoRestanteEmMillis = millisUntilFinished;
+                atualizarTimer();
+                atualizarProgressoCircular();
+            }
+
+            @Override
+            public void onFinish() {
+                timerRodando = false;
+                tempoRestanteEmMillis = 0;
+                atualizarTimer();
+                atualizarProgressoCircular();
+                atualizarBotoes();
+
+                if (emModoFoco) {
+                    totalMinutosFocoConcluidos += (int) (tempoFocoEmMillis / 60000);
+                    abrirTelaAlarme(true);
+                } else {
+                    totalMinutosPausaConcluidos += (int) (tempoPausaEmMillis / 60000);
+                    abrirTelaAlarme(false);
+                }
+            }
+        }.start();
+
+        timerRodando = true;
+        atualizarBotoes();
+    }
+
+    private void pausarTimer() {
+        if (countDownTimer != null) {
+            countDownTimer.cancel();
+        }
+
+        timerRodando = false;
+        atualizarBotoes();
+        Toast.makeText(this, "Timer pausado.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void cancelarTimer() {
+        if (countDownTimer != null) {
+            countDownTimer.cancel();
+        }
+
+        timerRodando = false;
+        definirModoFoco();
+        atualizarProgressoCircular();
+        dataInicioSessao = "";
+        totalMinutosFocoConcluidos = 0;
+        totalMinutosPausaConcluidos = 0;
+
+        Toast.makeText(this, "Pomodoro cancelado.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void finalizarEstudo() {
+        String materia = etMateria.getText().toString().trim();
+
+        if (materia.isEmpty()) {
+            Toast.makeText(this, "Digite a matéria antes de finalizar.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (dataInicioSessao.isEmpty()) {
+            Toast.makeText(this, "Nenhuma sessão iniciada para salvar.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (countDownTimer != null) {
+            countDownTimer.cancel();
+        }
+
+        timerRodando = false;
+
+        SessaoEstudo sessao = new SessaoEstudo();
+        sessao.setMateria(materia);
+        sessao.setTipo("Estudo");
+        sessao.setDuracaoPlanejada(totalMinutosFocoConcluidos + totalMinutosPausaConcluidos);
+        sessao.setDuracaoRealizada(totalMinutosFocoConcluidos);
+        sessao.setDataInicio(dataInicioSessao);
+        sessao.setDataFim(getDataHoraAtual());
+        sessao.setStatus("Concluído");
+
+        long id = sessaoDao.inserirSessao(sessao);
+
+        if (id > 0) {
+            Toast.makeText(this, "Sessão salva com sucesso!", Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Erro ao salvar sessão.", Toast.LENGTH_SHORT).show();
+        }
+
+        dataInicioSessao = "";
+        totalMinutosFocoConcluidos = 0;
+        totalMinutosPausaConcluidos = 0;
+        definirModoFoco();
+    }
+
+    private String getDataHoraAtual() {
+        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault());
+        return sdf.format(new Date());
+    }
+
+    private void atualizarTimer() {
+        int minutos = (int) (tempoRestanteEmMillis / 1000) / 60;
+        int segundos = (int) (tempoRestanteEmMillis / 1000) % 60;
+
+        String tempoFormatado = String.format(Locale.getDefault(), "%02d:%02d", minutos, segundos);
+        tvTimer.setText(tempoFormatado);
+    }
+
+    private void atualizarBotoes() {
+        btnIniciar.setEnabled(!timerRodando);
+        btnPausar.setEnabled(timerRodando);
+        btnCancelar.setEnabled(true);
+        btnFinalizarEstudo.setEnabled(true);
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.menu_main, menu);
+
+        // Verifica o tema atual e ajusta o texto do botão de alternância
+        MenuItem itemTema = menu.findItem(R.id.menu_tema);
+        if (preferencesHelper.isModoEscuro()) {
+            itemTema.setTitle("Modo Claro");
+        } else {
+            itemTema.setTitle("Modo Escuro");
+        }
+
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(@NonNull MenuItem item) {
+        int id = item.getItemId();
+
+        if (id == R.id.menu_tema) {
+            // Lógica de alternância do tema
+            boolean isEscuroAtual = preferencesHelper.isModoEscuro();
+            boolean novoModo = !isEscuroAtual;
+
+            // Guarda a nova preferência
+            preferencesHelper.setModoEscuro(novoModo);
+
+            // Aplica a mudança visual instantaneamente
+            if (novoModo) {
+                AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
+            } else {
+                AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
+            }
+            return true;
+
+        } else if (id == R.id.menu_sair) {
+            preferencesHelper.setLogin(false);
+            startActivity(new Intent(this, LoginActivity.class));
+            finish();
+            return true;
+
+        } else if (id == R.id.menu_compartilhar) {
+            startActivity(new Intent(this, RelatorioActivity.class));
+            return true;
+        }
+
+        return super.onOptionsItemSelected(item);
+    }
+
+    private void atualizarProgressoCircular() {
+        long tempoTotal = emModoFoco ? tempoFocoEmMillis : tempoPausaEmMillis;
+
+        if (tempoTotal > 0) {
+            int progresso = (int) ((tempoRestanteEmMillis * 1000) / tempoTotal);
+            progressCircular.setProgress(progresso);
+        }
+    }
+
+    private void configurarMenuInferior(String telaAtual) {
+        android.widget.ImageButton btnInicio = findViewById(R.id.btnNavInicio);
+        android.widget.ImageButton btnHistorico = findViewById(R.id.btnNavHistorico);
+        android.widget.ImageButton btnRelatorio = findViewById(R.id.btnNavRelatorio);
+        android.widget.ImageButton btnConfig = findViewById(R.id.btnNavConfig);
+
+        btnInicio.setBackgroundResource(android.R.color.transparent);
+        btnInicio.setColorFilter(getColor(R.color.text_muted));
+        btnHistorico.setBackgroundResource(android.R.color.transparent);
+        btnHistorico.setColorFilter(getColor(R.color.text_muted));
+        btnRelatorio.setBackgroundResource(android.R.color.transparent);
+        btnRelatorio.setColorFilter(getColor(R.color.text_muted));
+        btnConfig.setBackgroundResource(android.R.color.transparent);
+        btnConfig.setColorFilter(getColor(R.color.text_muted));
+
+        switch (telaAtual) {
+            case "INICIO":
+                btnInicio.setBackgroundResource(R.drawable.bg_item_selecionado);
+                btnInicio.setColorFilter(getColor(R.color.coral_primary));
+                break;
+            case "HISTORICO":
+                btnHistorico.setBackgroundResource(R.drawable.bg_item_selecionado);
+                btnHistorico.setColorFilter(getColor(R.color.coral_primary));
+                break;
+            case "RELATORIO":
+                btnRelatorio.setBackgroundResource(R.drawable.bg_item_selecionado);
+                btnRelatorio.setColorFilter(getColor(R.color.coral_primary));
+                break;
+            case "CONFIG":
+                btnConfig.setBackgroundResource(R.drawable.bg_item_selecionado);
+                btnConfig.setColorFilter(getColor(R.color.coral_primary));
+                break;
+        }
+
+        btnInicio.setOnClickListener(v -> {
+            if (!telaAtual.equals("INICIO")) {
+                android.content.Intent intent = new android.content.Intent(this, MainActivity.class);
+                intent.setFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                startActivity(intent);
+            }
+        });
+
+        btnHistorico.setOnClickListener(v -> {
+            if (!telaAtual.equals("HISTORICO")) {
+                android.content.Intent intent = new android.content.Intent(this, HistoricoActivity.class);
+                intent.setFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                startActivity(intent);
+            }
+        });
+
+        btnRelatorio.setOnClickListener(v -> {
+            if (!telaAtual.equals("RELATORIO")) {
+                android.content.Intent intent = new android.content.Intent(this, RelatorioActivity.class);
+                intent.setFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                startActivity(intent);
+            }
+        });
+
+        btnConfig.setOnClickListener(v -> {
+            if (!telaAtual.equals("CONFIG")) {
+                android.content.Intent intent = new android.content.Intent(this, ConfiguracoesActivity.class);
+                intent.setFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                startActivity(intent);
+            }
+        });
+    }
+}
