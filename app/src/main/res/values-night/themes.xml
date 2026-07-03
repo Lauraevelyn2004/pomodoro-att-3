@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Base.Theme.Pomodoro" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/coral_primary</item>
@@ -14,5 +15,14 @@
         <item name="android:editTextColor">@color/text_dark</item>
         <item name="android:textColorHint">@color/text_muted</item>
         <item name="android:textColor">@color/text_dark</item>
+    </style>
+
+    <style name="Theme.Pomodoro" parent="Base.Theme.Pomodoro" />
+
+    <style name="EstiloMenuPomodoro" parent="ThemeOverlay.Material3.Dark">
+        <item name="android:colorBackground">#121212</item>
+        <item name="colorSurface">#121212</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="colorOnSurface">#FFFFFF</item>
     </style>
 </resources>
